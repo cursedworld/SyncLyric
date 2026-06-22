@@ -32,6 +32,7 @@ class App(TkinterDnD.Tk):
         self.msg_queue = queue.Queue()
 
         self._build_ui()
+        self.bind_all("<Control-KeyPress>", self._handle_control_keys, add="+")
         self.after(100, self._poll_queue)
 
     # Построение интерфейса
@@ -234,3 +235,39 @@ class App(TkinterDnD.Tk):
         except queue.Empty:
             pass
         self.after(100, self._poll_queue)
+
+    def _handle_control_keys(self, event):
+        # Проверяем, нажат ли Ctrl (маска 0x4)
+        if (event.state & 0x4) != 0:
+            # Keycode 86 = V (Вставить)
+            if event.keycode == 86:
+                try:
+                    event.widget.event_generate("<<Paste>>")
+                except Exception:
+                    pass
+                return "break"
+            # Keycode 67 = C (Копировать)
+            elif event.keycode == 67:
+                try:
+                    event.widget.event_generate("<<Copy>>")
+                except Exception:
+                    pass
+                return "break"
+            # Keycode 88 = X (Вырезать)
+            elif event.keycode == 88:
+                try:
+                    event.widget.event_generate("<<Cut>>")
+                except Exception:
+                    pass
+                return "break"
+            # Keycode 65 = A (Выделить всё)
+            elif event.keycode == 65:
+                try:
+                    event.widget.select_range(0, 'end')
+                    event.widget.icursor('end')
+                except AttributeError:
+                    try:
+                        event.widget.tag_add("sel", "1.0", "end")
+                    except Exception:
+                        pass
+                return "break"
