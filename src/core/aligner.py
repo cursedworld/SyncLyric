@@ -108,12 +108,7 @@ class Aligner:
 
             # Принудительная монотонность: каждая строка должна идти строго вперед
             if line_time <= last_line_time:
-                gap = line_time - last_line_time  # обычно <= 0
-                if abs(gap) > 2.0:
-                    # Большой разрыв — компенсируем пропорционально
-                    line_time = last_line_time + abs(gap) + 0.5
-                else:
-                    line_time = last_line_time + 0.5
+                line_time = last_line_time + 0.5
             last_line_time = line_time
 
             original = source_lines[line_idx].rstrip("\n")
