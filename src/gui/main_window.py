@@ -6,6 +6,7 @@ import os
 import queue
 import threading
 from tkinter import filedialog
+from typing import Optional
 
 import customtkinter as ctk
 from tkinterdnd2 import TkinterDnD, DND_FILES
@@ -27,8 +28,8 @@ class App(TkinterDnD.Tk):
         self.geometry("800x650")
         self.minsize(700, 550)
 
-        self.audio_path: str | None = None
-        self.text_path: str | None = None
+        self.audio_path: Optional[str] = None
+        self.text_path: Optional[str] = None
         self.msg_queue = queue.Queue()
 
         self._build_ui()
@@ -170,40 +171,54 @@ class App(TkinterDnD.Tk):
         if not self.audio_path or not self.text_path:
             self._log("⚠️ Выберите оба файла (аудио + текст).")
             return
+
+        audio_path = self.audio_path
+        text_path = self.text_path
+        lang = self.lang_var.get()
+        if lang == "Auto":
+            lang = None
+        use_vad = self.vad_var.get()
+        initial_prompt = self.prompt_entry.get().strip() or None
+
         self.run_btn.configure(state="disabled")
         self.progress.start()
         self.progress.set(0)
-        threading.Thread(target=self._process_thread, daemon=True).start()
+        threading.Thread(
+            target=self._process_thread,
+            args=(audio_path, text_path, lang, use_vad, initial_prompt),
+            daemon=True,
+        ).start()
 
-    def _process_thread(self):
+    def _process_thread(
+        self,
+        audio_path: str,
+        text_path: str,
+        lang: Optional[str],
+        use_vad: bool,
+        initial_prompt: Optional[str],
+    ):
         temp_audio = None
         try:
             self.msg_queue.put(("log", "Шаг 1/4: Предобработка аудио (pydub)..."))
-            temp_audio = AudioProcessor.preprocess(self.audio_path)
+            temp_audio = AudioProcessor.preprocess(audio_path)
 
             self.msg_queue.put(("log", "Шаг 2/4: Загрузка модели Whisper (medium)..."))
             transcriber = Transcriber(model_size="medium", device="cuda", compute_type="float16")
 
-            lang = self.lang_var.get()
-            if lang == "Auto":
-                lang = None
-
             self.msg_queue.put(("log", "Шаг 3/4: Транскрибация аудио... Это может занять 1–3 минуты."))
-            use_vad = self.vad_var.get()
-            initial_prompt = self.prompt_entry.get().strip() or None
             asr_words, duration, duration_after_vad = transcriber.transcribe(
                 temp_audio, language=lang, use_vad=use_vad, initial_prompt=initial_prompt
             )
             self.msg_queue.put(("log", f"Распознано {len(asr_words)} слов. Полная длительность: {duration:.1f}s | После VAD: {duration_after_vad:.1f}s"))
 
             self.msg_queue.put(("log", "Шаг 4/4: Выравнивание текста и генерация LRC..."))
-            with open(self.text_path, "r", encoding="utf-8") as f:
+            with open(text_path, "r", encoding="utf-8-sig") as f:
                 source_lines = f.readlines()
 
             aligner = Aligner()
             lrc_lines = aligner.align(source_lines, asr_words)
 
-            out_path = os.path.splitext(self.audio_path)[0] + ".lrc"
+            out_path = os.path.splitext(audio_path)[0] + ".lrc"
             LRCWriter.write(lrc_lines, out_path)
 
             self.msg_queue.put(("done", out_path))

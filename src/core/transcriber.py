@@ -52,4 +52,8 @@ class Transcriber:
                         "end": w.end
                     })
 
-        return words, info.duration, info.duration_after_vad
+        duration_after_vad = getattr(info, "duration_after_vad", None)
+        if duration_after_vad is None:
+            duration_after_vad = info.duration
+
+        return words, info.duration, duration_after_vad

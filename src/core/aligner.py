@@ -5,10 +5,16 @@
 """
 import difflib
 import re
+import statistics
 from typing import List, Dict, Tuple, Optional
 
 
 class Aligner:
+    DEFAULT_WORD_STEP = 0.35
+    MIN_WORD_STEP = 0.12
+    MAX_WORD_STEP = 0.80
+    SIMILARITY_THRESHOLD = 0.60
+
     @staticmethod
     def normalize(word: str) -> str:
         "Приводит слово к каноническому виду для сравнения."
@@ -17,6 +23,43 @@ class Aligner:
         # Оставляем буквы, цифры, дефисы; удаляем пунктуацию
         word = re.sub(r"[^\w\s-]", "", word, flags=re.UNICODE)
         return word.strip()
+
+    @classmethod
+    def _estimate_word_step(cls, asr_words: List[Dict]) -> float:
+        intervals = []
+        prev_start: Optional[float] = None
+
+        for word in asr_words:
+            start = word.get("start")
+            if start is None:
+                continue
+            start = float(start)
+
+            if prev_start is not None:
+                gap = start - prev_start
+                if cls.MIN_WORD_STEP <= gap <= 1.20:
+                    intervals.append(gap)
+
+            end = word.get("end")
+            if end is not None:
+                duration = float(end) - start
+                if cls.MIN_WORD_STEP <= duration <= 1.20:
+                    intervals.append(duration)
+
+            prev_start = start
+
+        if not intervals:
+            return cls.DEFAULT_WORD_STEP
+
+        return min(cls.MAX_WORD_STEP, max(cls.MIN_WORD_STEP, statistics.median(intervals)))
+
+    @classmethod
+    def _similar_enough(cls, left: str, right: str) -> bool:
+        if left == right:
+            return True
+        if len(left) <= 2 or len(right) <= 2:
+            return False
+        return difflib.SequenceMatcher(None, left, right, autojunk=False).ratio() >= cls.SIMILARITY_THRESHOLD
 
     def align(self, source_lines: List[str], asr_words: List[Dict]) -> List[Tuple[float, str]]:
         """
@@ -35,11 +78,27 @@ class Aligner:
             raw_words = line.split()
             start = len(text_words)
             for w in raw_words:
-                text_words.append(self.normalize(w))
+                normalized = self.normalize(w)
+                if normalized:
+                    text_words.append(normalized)
             line_boundaries.append((start, len(text_words)))
 
+        if not text_words:
+            return []
+
         # 2. Нормализуем слова от Whisper
-        asr_norm = [self.normalize(w["word"]) for w in asr_words]
+        asr_tokens = []
+        for word in asr_words:
+            normalized = self.normalize(str(word.get("word", "")))
+            if normalized and word.get("start") is not None:
+                asr_tokens.append({
+                    "word": normalized,
+                    "start": float(word["start"]),
+                    "end": None if word.get("end") is None else float(word["end"]),
+                })
+
+        asr_norm = [w["word"] for w in asr_tokens]
+        word_step = self._estimate_word_step(asr_tokens)
 
         # 3. Fuzzy sequence matching
         # autojunk=False — важно для коротких текстов (песен), иначе длинные повторяющиеся блоки (припевы) могут исказить сопоставление
@@ -52,14 +111,16 @@ class Aligner:
             if tag == "equal":
                 # Прямое совпадение: переносим временную метку из Whisper
                 for i in range(i1, i2):
-                    word_times[i] = asr_words[j1 + (i - i1)]["start"]
+                    word_times[i] = asr_tokens[j1 + (i - i1)]["start"]
 
             elif tag == "replace":
-                # Если количество слов совпадает — сопоставляем по порядку.
-                # Это помогает, когда Whisper слегка исказил слово, но не добавил/удалил слова.
+                # Если количество слов совпадает, переносим только похожие слова.
+                # Иначе чужой куплет той же длины может стать ложным якорем.
                 if (i2 - i1) == (j2 - j1):
                     for i in range(i1, i2):
-                        word_times[i] = asr_words[j1 + (i - i1)]["start"]
+                        j = j1 + (i - i1)
+                        if self._similar_enough(text_words[i], asr_norm[j]):
+                            word_times[i] = asr_tokens[j]["start"]
                 # Иначе оставляем None для последующей интерполяции
 
         # 4. Интерполяция пропущенных таймингов
@@ -69,12 +130,11 @@ class Aligner:
             # Полное несовпадение — сохраняем структуру с нулевыми метками
             return [(0.0, line.rstrip("\n")) for line in source_lines if line.strip()]
 
-        # Заполняем начало: равномерное распределение от 0.00 до первого найденного слова
-        t_first = word_times[first_known]
+        # Заполняем начало назад от первого якоря. Не растягиваем неизвестный префикс от 0
+        # до первого совпадения: это давало строки [00:00] перед реальным входом вокала.
         if first_known > 0:
-            step = t_first / first_known
-            for k in range(0, first_known):
-                word_times[k] = step * k
+            for k in range(first_known - 1, -1, -1):
+                word_times[k] = max(0.0, word_times[k + 1] - word_step)
 
         prev = first_known
         for i in range(first_known + 1, len(word_times)):
@@ -88,7 +148,7 @@ class Aligner:
 
         # Заполняем хвост
         for k in range(prev + 1, len(word_times)):
-            word_times[k] = word_times[prev]
+            word_times[k] = word_times[k - 1] + word_step
 
         # 5. Собираем строки
         result: List[Tuple[float, str]] = []

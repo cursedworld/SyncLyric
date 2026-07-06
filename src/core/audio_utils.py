@@ -26,6 +26,7 @@ class AudioProcessor:
 
         # Whisper ожидает 16 кГц — приводим частоту дискретизации
         audio = audio.set_frame_rate(16000)
+        audio = audio.set_sample_width(2)
 
         # Сохраняем во временный файл без сжатия для скорости
         fd, temp_path = tempfile.mkstemp(suffix=".wav")
